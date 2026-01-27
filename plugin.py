@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from qgis.PyQt.QtWidgets import QAction
+from qgis.PyQt.QtWidgets import QAction, QToolBar
 from qgis.PyQt.QtGui import QIcon
 from qgis.core import QgsApplication
 
@@ -30,7 +30,7 @@ class DataDownloaderPlugin:
 
     def _get_or_create_toolbar(self, toolbar_name):
         main_window = self.iface.mainWindow()
-        for toolbar in main_window.findChildren(type(main_window.addToolBar(""))):
+        for toolbar in main_window.findChildren(QToolBar):
             if toolbar.windowTitle() == toolbar_name:
                 return toolbar
         return main_window.addToolBar(toolbar_name)

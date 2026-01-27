@@ -252,7 +252,20 @@ class MainDialog(QDialog):
             QMessageBox.warning(self, "Error", "Layer has no valid extent")
             return
 
-        geometry = QgsGeometry.fromRect(extent)
+        geometry = None
+
+        if isinstance(layer, QgsVectorLayer) and layer.geometryType() == QgsWkbTypes.PolygonGeometry:
+            features = list(layer.getFeatures())
+            if features:
+                geometries = [f.geometry() for f in features if f.hasGeometry()]
+                if geometries:
+                    if len(geometries) == 1:
+                        geometry = geometries[0]
+                    else:
+                        geometry = QgsGeometry.unaryUnion(geometries)
+
+        if not geometry:
+            geometry = QgsGeometry.fromRect(extent)
 
         if layer.crs().isValid():
             project_crs = QgsProject.instance().crs()
