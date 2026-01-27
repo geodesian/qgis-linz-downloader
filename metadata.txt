@@ -1,0 +1,16 @@
+[general]
+name=LINZ Data Downloader
+qgisMinimumVersion=3.0
+description=Download geospatial data from LINZ Data Service
+version=1.0.0
+author=Georgi Pavlov
+email=georgi@regrarians.com
+about=A tool for downloading and clipping geospatial data (DEMs, cadastral, imagery, vector layers) from LINZ Data Service using polygon area selection.
+tracker=https://github.com/geodesian/qgis-linz-downloader/issues
+repository=https://github.com/geodesian/qgis-linz-downloader
+tags=download, data, linz, new zealand, dem, elevation, cadastral, imagery
+homepage=https://github.com/geodesian/qgis-linz-downloader
+category=Web
+icon=resources/icon.png
+experimental=True
+deprecated=False
