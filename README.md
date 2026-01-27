@@ -2,6 +2,8 @@
 
 A QGIS plugin for downloading geospatial data from LINZ Data Service with polygon-based area selection.
 
+<img width="796" height="840" alt="image" src="https://github.com/user-attachments/assets/3da010c3-fe93-4aad-b27d-459f51def016" />
+
 ## Features
 
 - Download DEMs, cadastral data, imagery, and vector layers from LINZ Data Service
