@@ -387,7 +387,7 @@ class LINZProvider(BaseProvider):
 
         output_path = output_dir / f"{safe_name}.geojson"
 
-        response = requests.get(url, params=params, stream=True, timeout=300)
+        response = requests.get(url, params=params, stream=True, timeout=None)
         log(f"[WFS] Status: {response.status_code}")
         log(f"[WFS] Headers: {dict(response.headers)}")
 
@@ -402,14 +402,19 @@ class LINZProvider(BaseProvider):
 
         total_size = int(response.headers.get("content-length", 0))
         downloaded = 0
+        last_progress_update = 0
+        import time
 
         with open(output_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-                downloaded += len(chunk)
-                if progress_callback:
-                    percent = (downloaded / total_size * 100) if total_size else 0
-                    progress_callback(percent, downloaded, total_size)
+            for chunk in response.iter_content(chunk_size=65536):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    current_time = time.time()
+                    if progress_callback and (current_time - last_progress_update >= 0.2 or downloaded == total_size):
+                        percent = (downloaded / total_size * 100) if total_size else 0
+                        progress_callback(percent, downloaded, total_size)
+                        last_progress_update = current_time
 
         log(f"[WFS] Downloaded {downloaded} bytes to {output_path}")
 
@@ -497,7 +502,7 @@ class LINZProvider(BaseProvider):
 
         try:
             log("[WCS] Making request...")
-            response = requests.get(url, params=params, stream=True, timeout=600)
+            response = requests.get(url, params=params, stream=True, timeout=None)
 
             log(f"[WCS] Status code: {response.status_code}")
             log(f"[WCS] Content-Type: {response.headers.get('content-type', 'N/A')}")
@@ -528,16 +533,21 @@ class LINZProvider(BaseProvider):
 
             total_size = int(response.headers.get("content-length", 0))
             downloaded = 0
+            last_progress_update = 0
+            import time
 
             log(f"[WCS] Downloading to {output_path}, total size: {total_size}")
 
             with open(output_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback:
-                        percent = (downloaded / total_size * 100) if total_size else 0
-                        progress_callback(percent, downloaded, total_size)
+                for chunk in response.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        current_time = time.time()
+                        if progress_callback and (current_time - last_progress_update >= 0.2 or downloaded == total_size):
+                            percent = (downloaded / total_size * 100) if total_size else 0
+                            progress_callback(percent, downloaded, total_size)
+                            last_progress_update = current_time
 
             log(f"[WCS] Download complete: {downloaded} bytes")
 
@@ -606,7 +616,7 @@ class LINZProvider(BaseProvider):
                     "Authorization": f"key {self.api_key}"
                 },
                 json=export_data,
-                timeout=60
+                timeout=None
             )
             log(f"[EXPORT] Response status: {create_response.status_code}")
             log(f"[EXPORT] Response headers: {dict(create_response.headers)}")
@@ -677,23 +687,25 @@ class LINZProvider(BaseProvider):
             status_url = f"{export_url}{export_id}/"
             log(f"[EXPORT] Status URL: {status_url}")
 
-            max_attempts = 120
-            for attempt in range(max_attempts):
+            attempt = 0
+            while True:
+                attempt += 1
                 if progress_callback:
-                    progress_callback(min(50, attempt), 0, 0)
+                    progress_callback(min(50, attempt * 0.5), 0, 0)
 
-                log(f"[EXPORT] Checking status (attempt {attempt + 1})...")
+                log(f"[EXPORT] Checking status (attempt {attempt})...")
                 status_response = requests.get(
                     status_url,
                     headers={"Authorization": f"key {self.api_key}"},
-                    timeout=30
+                    timeout=None
                 )
                 log(f"[EXPORT] Status response: {status_response.status_code}")
                 status_response.raise_for_status()
                 status_info = status_response.json()
 
                 state = status_info.get("state", "")
-                log(f"[EXPORT] State: {state}")
+                progress = status_info.get("progress", 0)
+                log(f"[EXPORT] State: {state}, Progress: {progress}%")
 
                 if state == "complete":
                     download_url = status_info.get("download_url")
@@ -710,15 +722,7 @@ class LINZProvider(BaseProvider):
                         error_message=f"Export failed: {error_msg}"
                     )
 
-                time.sleep(3)
-            else:
-                log("[EXPORT] Timed out after 120 attempts")
-                return DownloadResult(
-                    dataset=dataset,
-                    output_path=output_dir,
-                    success=False,
-                    error_message="Export timed out (6 min)"
-                )
+                time.sleep(5)
 
             if progress_callback:
                 progress_callback(60, 0, 0)
@@ -728,7 +732,7 @@ class LINZProvider(BaseProvider):
                 download_url,
                 headers={"Authorization": f"key {self.api_key}"},
                 stream=True,
-                timeout=600
+                timeout=None
             )
             log(f"[EXPORT] File response status: {file_response.status_code}")
             file_response.raise_for_status()
@@ -737,14 +741,18 @@ class LINZProvider(BaseProvider):
             total_size = int(file_response.headers.get("content-length", 0))
             log(f"[EXPORT] File size: {total_size}, saving to: {output_path}")
             downloaded = 0
+            last_progress_update = 0
 
             with open(output_path, "wb") as f:
-                for chunk in file_response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if progress_callback:
-                        percent = 60 + ((downloaded / total_size * 40) if total_size else 0)
-                        progress_callback(percent, downloaded, total_size)
+                for chunk in file_response.iter_content(chunk_size=65536):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        current_time = time.time()
+                        if progress_callback and (current_time - last_progress_update >= 0.2 or downloaded == total_size):
+                            percent = 60 + ((downloaded / total_size * 40) if total_size else 0)
+                            progress_callback(percent, downloaded, total_size)
+                            last_progress_update = current_time
 
             log(f"[EXPORT] Download complete: {downloaded} bytes")
 
