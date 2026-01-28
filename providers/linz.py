@@ -4,7 +4,7 @@ import requests
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from qgis.core import QgsGeometry, QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject
+from qgis.core import QgsGeometry, QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsRectangle
 
 from .base import BaseProvider
 from ..core.models import Dataset, DatasetCategory, ProviderInfo, DownloadResult, DataType
@@ -48,6 +48,35 @@ class LINZProvider(BaseProvider):
 
     def _get_export_url(self) -> str:
         return "https://data.linz.govt.nz/services/api/v1.x/exports/"
+
+    def _geometry_to_geojson(self, geometry: QgsGeometry, target_epsg: str = "EPSG:4326") -> dict:
+        target_crs = QgsCoordinateReferenceSystem(target_epsg)
+        project_crs = QgsProject.instance().crs()
+
+        transformed = QgsGeometry(geometry)
+        if project_crs.isValid() and project_crs.authid() != target_crs.authid():
+            transform = QgsCoordinateTransform(project_crs, target_crs, QgsProject.instance())
+            transformed.transform(transform)
+
+        coords = []
+        if transformed.isMultipart():
+            polygons = transformed.asMultiPolygon()
+            if polygons:
+                for ring in polygons[0]:
+                    coords.append([[point.x(), point.y()] for point in ring])
+        else:
+            polygon = transformed.asPolygon()
+            if polygon:
+                for ring in polygon:
+                    coords.append([[point.x(), point.y()] for point in ring])
+
+        if not coords:
+            bbox = transformed.boundingBox()
+            coords = [[[bbox.xMinimum(), bbox.yMinimum()], [bbox.xMaximum(), bbox.yMinimum()],
+                      [bbox.xMaximum(), bbox.yMaximum()], [bbox.xMinimum(), bbox.yMaximum()],
+                      [bbox.xMinimum(), bbox.yMinimum()]]]
+
+        return {"type": "Polygon", "coordinates": coords}
 
     def _geometry_to_bbox(self, geometry: QgsGeometry, target_epsg: str = "EPSG:4326") -> tuple:
         target_crs = QgsCoordinateReferenceSystem(target_epsg)
@@ -402,19 +431,19 @@ class LINZProvider(BaseProvider):
 
         total_size = int(response.headers.get("content-length", 0))
         downloaded = 0
-        last_progress_update = 0
-        import time
+        last_percent = 0
 
         with open(output_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=65536):
                 if chunk:
                     f.write(chunk)
                     downloaded += len(chunk)
-                    current_time = time.time()
-                    if progress_callback and (current_time - last_progress_update >= 0.2 or downloaded == total_size):
-                        percent = (downloaded / total_size * 100) if total_size else 0
-                        progress_callback(percent, downloaded, total_size)
-                        last_progress_update = current_time
+                    if progress_callback and total_size:
+                        percent = (downloaded / total_size * 100)
+                        if percent - last_percent >= 1 or downloaded == total_size:
+                            if progress_callback(percent, downloaded, total_size) == False:
+                                raise Exception("Download cancelled")
+                            last_percent = percent
 
         log(f"[WFS] Downloaded {downloaded} bytes to {output_path}")
 
@@ -446,7 +475,7 @@ class LINZProvider(BaseProvider):
 
         log(f"[RASTER] WCS failed: {wcs_result.error_message}")
         log("[RASTER] Trying Export API...")
-        export_result = self._try_export_download(layer_id, bbox, safe_name, output_dir, dataset, progress_callback, log)
+        export_result = self._try_export_download(layer_id, bbox, safe_name, output_dir, dataset, progress_callback, geometry, log)
         if export_result.success:
             log("[RASTER] Export succeeded!")
             return export_result
@@ -533,8 +562,7 @@ class LINZProvider(BaseProvider):
 
             total_size = int(response.headers.get("content-length", 0))
             downloaded = 0
-            last_progress_update = 0
-            import time
+            last_percent = 0
 
             log(f"[WCS] Downloading to {output_path}, total size: {total_size}")
 
@@ -543,11 +571,12 @@ class LINZProvider(BaseProvider):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
-                        current_time = time.time()
-                        if progress_callback and (current_time - last_progress_update >= 0.2 or downloaded == total_size):
-                            percent = (downloaded / total_size * 100) if total_size else 0
-                            progress_callback(percent, downloaded, total_size)
-                            last_progress_update = current_time
+                        if progress_callback and total_size:
+                            percent = (downloaded / total_size * 100)
+                            if percent - last_percent >= 1 or downloaded == total_size:
+                                if progress_callback(percent, downloaded, total_size) == False:
+                                    raise Exception("Download cancelled")
+                                last_percent = percent
 
             log(f"[WCS] Download complete: {downloaded} bytes")
 
@@ -573,6 +602,7 @@ class LINZProvider(BaseProvider):
         output_dir: Path,
         dataset: Dataset,
         progress_callback: Optional[callable] = None,
+        geometry: Optional[QgsGeometry] = None,
         log: Optional[callable] = None
     ) -> DownloadResult:
         import time
@@ -581,19 +611,23 @@ class LINZProvider(BaseProvider):
         if not log:
             log = lambda x: None
 
-        minx, miny, maxx, maxy = bbox
-
         export_url = self._get_export_url()
         log(f"[EXPORT] URL: {export_url}")
 
-        extent_geojson = {
-            "type": "Polygon",
-            "coordinates": [[[minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]]]
-        }
+        native_crs = dataset.crs or "EPSG:2193"
+        log(f"[EXPORT] Requesting data in native CRS: {native_crs}")
+
+        if geometry:
+            extent_geojson = self._geometry_to_geojson(geometry, native_crs)
+            log(f"[EXPORT] Using actual polygon geometry with {len(extent_geojson['coordinates'][0])} vertices")
+        else:
+            bbox_geom = QgsGeometry.fromRect(QgsRectangle(bbox[0], bbox[1], bbox[2], bbox[3]))
+            extent_geojson = self._geometry_to_geojson(bbox_geom, native_crs)
+            log(f"[EXPORT] Using bounding box")
 
         export_data = {
             "items": [{"item": f"https://data.linz.govt.nz/services/api/v1.x/layers/{layer_id}/"}],
-            "crs": "EPSG:4326",
+            "crs": native_crs,
             "formats": {
                 "grid": "image/tiff;subtype=geotiff",
                 "raster": "image/tiff;subtype=geotiff"
@@ -691,7 +725,14 @@ class LINZProvider(BaseProvider):
             while True:
                 attempt += 1
                 if progress_callback:
-                    progress_callback(min(50, attempt * 0.5), 0, 0)
+                    if progress_callback(min(50, attempt * 0.5), 0, 0) == False:
+                        log("[EXPORT] Cancelled during export processing")
+                        return DownloadResult(
+                            dataset=dataset,
+                            output_path=output_dir,
+                            success=False,
+                            error_message="Download cancelled"
+                        )
 
                 log(f"[EXPORT] Checking status (attempt {attempt})...")
                 status_response = requests.get(
@@ -741,18 +782,20 @@ class LINZProvider(BaseProvider):
             total_size = int(file_response.headers.get("content-length", 0))
             log(f"[EXPORT] File size: {total_size}, saving to: {output_path}")
             downloaded = 0
-            last_progress_update = 0
+            last_percent = 0
 
             with open(output_path, "wb") as f:
                 for chunk in file_response.iter_content(chunk_size=65536):
                     if chunk:
                         f.write(chunk)
                         downloaded += len(chunk)
-                        current_time = time.time()
-                        if progress_callback and (current_time - last_progress_update >= 0.2 or downloaded == total_size):
-                            percent = 60 + ((downloaded / total_size * 40) if total_size else 0)
-                            progress_callback(percent, downloaded, total_size)
-                            last_progress_update = current_time
+                        if progress_callback and total_size:
+                            download_percent = (downloaded / total_size * 100)
+                            percent = 60 + (download_percent * 0.4)
+                            if percent - last_percent >= 0.4 or downloaded == total_size:
+                                if progress_callback(percent, downloaded, total_size) == False:
+                                    raise Exception("Download cancelled")
+                                last_percent = percent
 
             log(f"[EXPORT] Download complete: {downloaded} bytes")
 

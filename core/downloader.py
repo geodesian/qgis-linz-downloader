@@ -41,6 +41,8 @@ class DownloadTask(QgsTask):
             self.on_file_start(self.dataset.name, self._total_bytes)
 
         def progress_callback(percent, bytes_downloaded=None, total_bytes=None):
+            if self.isCanceled():
+                return False
             if total_bytes is not None:
                 self._total_bytes = total_bytes
             if bytes_downloaded is not None:
@@ -50,6 +52,7 @@ class DownloadTask(QgsTask):
             self.setProgress(percent * 0.8)
             if self.on_progress:
                 self.on_progress(self._bytes_downloaded, self._total_bytes, percent * 0.8)
+            return True
 
         self.result = self.provider.download(
             self.dataset,
