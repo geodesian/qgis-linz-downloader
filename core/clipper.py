@@ -42,8 +42,6 @@ class Clipper:
         output_path: Path,
         nodata_value: Optional[int] = None
     ) -> Path:
-        from qgis.core import QgsMessageLog, Qgis
-
         layer = QgsRasterLayer(str(input_path), "temp")
         if not layer.isValid():
             raise ValueError(f"Invalid raster: {input_path}")
@@ -53,27 +51,17 @@ class Clipper:
         has_nodata = provider.sourceHasNoDataValue(1)
         if has_nodata:
             src_nodata = provider.sourceNoDataValue(1)
-            QgsMessageLog.logMessage(f"Source raster nodata: {src_nodata}", "Clipper", Qgis.Info)
-        else:
-            QgsMessageLog.logMessage("Source raster has no nodata value", "Clipper", Qgis.Info)
 
         target_crs = layer.crs()
         source_crs = QgsProject.instance().crs()
-
-        QgsMessageLog.logMessage(f"Raster CRS: {target_crs.authid()}", "Clipper", Qgis.Info)
-        QgsMessageLog.logMessage(f"Project CRS: {source_crs.authid()}", "Clipper", Qgis.Info)
 
         clip_geom = QgsGeometry(geometry)
         if source_crs != target_crs:
             transform = QgsCoordinateTransform(source_crs, target_crs, QgsProject.instance())
             clip_geom.transform(transform)
-            QgsMessageLog.logMessage("Transformed clip geometry to raster CRS", "Clipper", Qgis.Info)
 
         raster_extent = layer.extent()
         clip_bbox = clip_geom.boundingBox()
-
-        QgsMessageLog.logMessage(f"Raster extent: {raster_extent.toString()}", "Clipper", Qgis.Info)
-        QgsMessageLog.logMessage(f"Clip bbox: {clip_bbox.toString()}", "Clipper", Qgis.Info)
 
         if not raster_extent.intersects(clip_bbox):
             raise ValueError(f"Clip geometry does not intersect raster extent")
@@ -83,8 +71,6 @@ class Clipper:
                 nodata_value = int(src_nodata)
             else:
                 nodata_value = -9999
-
-        QgsMessageLog.logMessage(f"Using nodata value: {nodata_value}", "Clipper", Qgis.Info)
 
         params = {
             "INPUT": str(input_path),
@@ -98,16 +84,7 @@ class Clipper:
             "MULTITHREADING": True
         }
 
-        QgsMessageLog.logMessage("Starting GDAL clip operation", "Clipper", Qgis.Info)
-        result = processing.run("gdal:cliprasterbymasklayer", params)
-        QgsMessageLog.logMessage(f"GDAL clip completed: {result}", "Clipper", Qgis.Info)
-
-        clipped_layer = QgsRasterLayer(str(output_path), "clipped_check")
-        if clipped_layer.isValid():
-            stats = clipped_layer.dataProvider().bandStatistics(1)
-            QgsMessageLog.logMessage(f"Clipped stats - min: {stats.minimumValue}, max: {stats.maximumValue}, range: {stats.range}", "Clipper", Qgis.Info)
-            if hasattr(stats, 'validPixelCount'):
-                QgsMessageLog.logMessage(f"Valid pixels: {stats.validPixelCount}", "Clipper", Qgis.Info)
+        processing.run("gdal:cliprasterbymasklayer", params)
 
         return output_path
 

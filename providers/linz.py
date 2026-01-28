@@ -335,17 +335,6 @@ class LINZProvider(BaseProvider):
                 error_message="No data coverage in selected area. Try a different location or dataset."
             )
 
-        debug_log = []
-
-        def log(msg):
-            debug_log.append(msg)
-
-        log(f"[DEBUG] Starting download for: {dataset.name}")
-        log(f"[DEBUG] Dataset ID: {dataset.id}")
-        log(f"[DEBUG] Data type: {dataset.data_type}")
-        log(f"[DEBUG] API key length: {len(self.api_key) if self.api_key else 0}")
-        log(f"[DEBUG] API key prefix: {self.api_key[:8]}..." if self.api_key and len(self.api_key) > 8 else "[DEBUG] API key too short")
-
         if not self.api_key:
             return DownloadResult(
                 dataset=dataset,
@@ -358,30 +347,17 @@ class LINZProvider(BaseProvider):
         layer_id = dataset.metadata.get("layer_id", dataset.id)
         safe_name = dataset.name.replace(" ", "_").replace("/", "-").replace("(", "").replace(")", "")
 
-        log(f"[DEBUG] Layer ID: {layer_id}")
-        log(f"[DEBUG] BBOX: {bbox}")
-
         try:
             if dataset.data_type == DataType.RASTER:
-                result = self._download_raster(layer_id, bbox, safe_name, output_dir, dataset, progress_callback, geometry, log)
+                return self._download_raster(layer_id, bbox, safe_name, output_dir, dataset, progress_callback, geometry)
             else:
-                result = self._download_vector(layer_id, bbox, safe_name, output_dir, dataset, progress_callback, log)
-
-            if not result.success:
-                err = result.error_message or "Unknown error"
-                if "outside" in err.lower() or "coverage" in err.lower():
-                    pass
-                else:
-                    result.error_message = " | ".join(debug_log) + " | " + err
-            return result
-
+                return self._download_vector(layer_id, bbox, safe_name, output_dir, dataset, progress_callback)
         except Exception as e:
-            log(f"[DEBUG] Exception: {str(e)}")
             return DownloadResult(
                 dataset=dataset,
                 output_path=output_dir,
                 success=False,
-                error_message=" | ".join(debug_log) + f" | Exception: {str(e)}"
+                error_message=f"Exception: {str(e)}"
             )
 
     def _download_vector(
@@ -391,12 +367,8 @@ class LINZProvider(BaseProvider):
         safe_name: str,
         output_dir: Path,
         dataset: Dataset,
-        progress_callback: Optional[callable] = None,
-        log: Optional[callable] = None
+        progress_callback: Optional[callable] = None
     ) -> DownloadResult:
-        if not log:
-            log = lambda x: None
-
         url = self._get_wfs_url(layer_id)
         minx, miny, maxx, maxy = bbox
 
@@ -411,14 +383,9 @@ class LINZProvider(BaseProvider):
             "BBOX": f"{minx},{miny},{maxx},{maxy},EPSG:4326"
         }
 
-        log(f"[WFS] URL: {url}")
-        log(f"[WFS] Params: {params}")
-
         output_path = output_dir / f"{safe_name}.geojson"
 
         response = requests.get(url, params=params, stream=True, timeout=None)
-        log(f"[WFS] Status: {response.status_code}")
-        log(f"[WFS] Headers: {dict(response.headers)}")
 
         if response.status_code == 404:
             raise ValueError(f"Layer {layer_id} not found or WFS not available for this layer")
@@ -445,8 +412,6 @@ class LINZProvider(BaseProvider):
                                 raise Exception("Download cancelled")
                             last_percent = percent
 
-        log(f"[WFS] Downloaded {downloaded} bytes to {output_path}")
-
         return DownloadResult(
             dataset=dataset,
             output_path=output_path,
@@ -461,26 +426,15 @@ class LINZProvider(BaseProvider):
         output_dir: Path,
         dataset: Dataset,
         progress_callback: Optional[callable] = None,
-        geometry: Optional[QgsGeometry] = None,
-        log: Optional[callable] = None
+        geometry: Optional[QgsGeometry] = None
     ) -> DownloadResult:
-        if not log:
-            log = lambda x: None
-
-        log("[RASTER] Trying WCS first...")
-        wcs_result = self._try_wcs_download(layer_id, bbox, safe_name, output_dir, dataset, progress_callback, log)
+        wcs_result = self._try_wcs_download(layer_id, bbox, safe_name, output_dir, dataset, progress_callback)
         if wcs_result.success:
-            log("[RASTER] WCS succeeded!")
             return wcs_result
 
-        log(f"[RASTER] WCS failed: {wcs_result.error_message}")
-        log("[RASTER] Trying Export API...")
-        export_result = self._try_export_download(layer_id, bbox, safe_name, output_dir, dataset, progress_callback, geometry, log)
+        export_result = self._try_export_download(layer_id, bbox, safe_name, output_dir, dataset, progress_callback, geometry)
         if export_result.success:
-            log("[RASTER] Export succeeded!")
             return export_result
-
-        log(f"[RASTER] Export failed: {export_result.error_message}")
 
         final_error = export_result.error_message
         if "outside" in final_error.lower() or "coverage" in final_error.lower():
@@ -502,12 +456,8 @@ class LINZProvider(BaseProvider):
         safe_name: str,
         output_dir: Path,
         dataset: Dataset,
-        progress_callback: Optional[callable] = None,
-        log: Optional[callable] = None
+        progress_callback: Optional[callable] = None
     ) -> DownloadResult:
-        if not log:
-            log = lambda x: None
-
         minx, miny, maxx, maxy = bbox
 
         url = self._get_wcs_url(layer_id)
@@ -524,21 +474,12 @@ class LINZProvider(BaseProvider):
             "height": 2048
         }
 
-        log(f"[WCS] URL: {url}")
-        log(f"[WCS] Params: {params}")
-
         output_path = output_dir / f"{safe_name}.tif"
 
         try:
-            log("[WCS] Making request...")
             response = requests.get(url, params=params, stream=True, timeout=None)
 
-            log(f"[WCS] Status code: {response.status_code}")
-            log(f"[WCS] Content-Type: {response.headers.get('content-type', 'N/A')}")
-            log(f"[WCS] Content-Length: {response.headers.get('content-length', 'N/A')}")
-
             if response.status_code == 404:
-                log("[WCS] 404 - Not found")
                 return DownloadResult(
                     dataset=dataset,
                     output_path=output_dir,
@@ -551,7 +492,6 @@ class LINZProvider(BaseProvider):
             content_type = response.headers.get("content-type", "")
             if "xml" in content_type.lower():
                 error_text = response.text[:1000]
-                log(f"[WCS] Got XML response: {error_text[:300]}")
                 if "exception" in error_text.lower() or "error" in error_text.lower():
                     return DownloadResult(
                         dataset=dataset,
@@ -563,8 +503,6 @@ class LINZProvider(BaseProvider):
             total_size = int(response.headers.get("content-length", 0))
             downloaded = 0
             last_percent = 0
-
-            log(f"[WCS] Downloading to {output_path}, total size: {total_size}")
 
             with open(output_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=65536):
@@ -578,15 +516,12 @@ class LINZProvider(BaseProvider):
                                     raise Exception("Download cancelled")
                                 last_percent = percent
 
-            log(f"[WCS] Download complete: {downloaded} bytes")
-
             return DownloadResult(
                 dataset=dataset,
                 output_path=output_path,
                 success=True
             )
         except Exception as e:
-            log(f"[WCS] Exception: {type(e).__name__}: {str(e)}")
             return DownloadResult(
                 dataset=dataset,
                 output_path=output_dir,
@@ -602,32 +537,21 @@ class LINZProvider(BaseProvider):
         output_dir: Path,
         dataset: Dataset,
         progress_callback: Optional[callable] = None,
-        geometry: Optional[QgsGeometry] = None,
-        log: Optional[callable] = None
+        geometry: Optional[QgsGeometry] = None
     ) -> DownloadResult:
         import time
-        import json
-
-        if not log:
-            log = lambda x: None
 
         export_url = self._get_export_url()
-        log(f"[EXPORT] URL: {export_url}")
-
-        native_crs = dataset.crs or "EPSG:2193"
-        log(f"[EXPORT] Requesting data in native CRS: {native_crs}")
 
         if geometry:
-            extent_geojson = self._geometry_to_geojson(geometry, native_crs)
-            log(f"[EXPORT] Using actual polygon geometry with {len(extent_geojson['coordinates'][0])} vertices")
+            extent_geojson = self._geometry_to_geojson(geometry, "EPSG:4326")
         else:
             bbox_geom = QgsGeometry.fromRect(QgsRectangle(bbox[0], bbox[1], bbox[2], bbox[3]))
-            extent_geojson = self._geometry_to_geojson(bbox_geom, native_crs)
-            log(f"[EXPORT] Using bounding box")
+            extent_geojson = self._geometry_to_geojson(bbox_geom, "EPSG:4326")
 
         export_data = {
             "items": [{"item": f"https://data.linz.govt.nz/services/api/v1.x/layers/{layer_id}/"}],
-            "crs": native_crs,
+            "crs": "EPSG:4326",
             "formats": {
                 "grid": "image/tiff;subtype=geotiff",
                 "raster": "image/tiff;subtype=geotiff"
@@ -635,14 +559,10 @@ class LINZProvider(BaseProvider):
             "extent": extent_geojson
         }
 
-        log(f"[EXPORT] Request body: {json.dumps(export_data)}")
-        log(f"[EXPORT] Auth header: Authorization: key {self.api_key[:8]}...{self.api_key[-4:]}")
-
         create_response = None
-
         last_error = None
+
         try:
-            log("[EXPORT] Making POST request...")
             create_response = requests.post(
                 export_url,
                 headers={
@@ -652,12 +572,8 @@ class LINZProvider(BaseProvider):
                 json=export_data,
                 timeout=None
             )
-            log(f"[EXPORT] Response status: {create_response.status_code}")
-            log(f"[EXPORT] Response headers: {dict(create_response.headers)}")
-            log(f"[EXPORT] Response body: {create_response.text[:2000]}")
         except requests.RequestException as e:
             last_error = str(e)
-            log(f"[EXPORT] Request exception: {last_error}")
             create_response = None
 
         try:
@@ -671,7 +587,6 @@ class LINZProvider(BaseProvider):
 
             if create_response.status_code in [401, 403]:
                 error_detail = create_response.text[:300]
-                log(f"[EXPORT] Auth error: {error_detail}")
                 return DownloadResult(
                     dataset=dataset,
                     output_path=output_dir,
@@ -681,7 +596,6 @@ class LINZProvider(BaseProvider):
 
             if create_response.status_code >= 400:
                 error_detail = create_response.text
-                log(f"[EXPORT] Error response: {error_detail[:500]}")
                 user_message = f"Export error ({create_response.status_code})"
                 try:
                     error_json = create_response.json()
@@ -689,7 +603,6 @@ class LINZProvider(BaseProvider):
                     if items and isinstance(items, list):
                         for item in items:
                             reasons = item.get("invalid_reasons", [])
-                            log(f"[EXPORT] Invalid reasons: {reasons}")
                             if "outside-extent" in reasons:
                                 user_message = "Selected area is outside this dataset's coverage"
                             elif reasons:
@@ -705,11 +618,9 @@ class LINZProvider(BaseProvider):
 
             create_response.raise_for_status()
             export_info = create_response.json()
-            log(f"[EXPORT] Export info: {export_info}")
 
             export_id = export_info.get("id")
             if not export_id:
-                log("[EXPORT] No export ID in response!")
                 return DownloadResult(
                     dataset=dataset,
                     output_path=output_dir,
@@ -717,16 +628,13 @@ class LINZProvider(BaseProvider):
                     error_message="Failed to create export job - no ID returned"
                 )
 
-            log(f"[EXPORT] Export ID: {export_id}")
             status_url = f"{export_url}{export_id}/"
-            log(f"[EXPORT] Status URL: {status_url}")
 
             attempt = 0
             while True:
                 attempt += 1
                 if progress_callback:
                     if progress_callback(min(50, attempt * 0.5), 0, 0) == False:
-                        log("[EXPORT] Cancelled during export processing")
                         return DownloadResult(
                             dataset=dataset,
                             output_path=output_dir,
@@ -734,28 +642,22 @@ class LINZProvider(BaseProvider):
                             error_message="Download cancelled"
                         )
 
-                log(f"[EXPORT] Checking status (attempt {attempt})...")
                 status_response = requests.get(
                     status_url,
                     headers={"Authorization": f"key {self.api_key}"},
                     timeout=None
                 )
-                log(f"[EXPORT] Status response: {status_response.status_code}")
                 status_response.raise_for_status()
                 status_info = status_response.json()
 
                 state = status_info.get("state", "")
-                progress = status_info.get("progress", 0)
-                log(f"[EXPORT] State: {state}, Progress: {progress}%")
 
                 if state == "complete":
                     download_url = status_info.get("download_url")
-                    log(f"[EXPORT] Download URL: {download_url}")
                     if download_url:
                         break
                 elif state in ["error", "cancelled", "failed"]:
                     error_msg = status_info.get("error", state)
-                    log(f"[EXPORT] Failed with: {error_msg}")
                     return DownloadResult(
                         dataset=dataset,
                         output_path=output_dir,
@@ -768,19 +670,16 @@ class LINZProvider(BaseProvider):
             if progress_callback:
                 progress_callback(60, 0, 0)
 
-            log(f"[EXPORT] Downloading file from: {download_url}")
             file_response = requests.get(
                 download_url,
                 headers={"Authorization": f"key {self.api_key}"},
                 stream=True,
                 timeout=None
             )
-            log(f"[EXPORT] File response status: {file_response.status_code}")
             file_response.raise_for_status()
 
             output_path = output_dir / f"{safe_name}.zip"
             total_size = int(file_response.headers.get("content-length", 0))
-            log(f"[EXPORT] File size: {total_size}, saving to: {output_path}")
             downloaded = 0
             last_percent = 0
 
@@ -797,8 +696,6 @@ class LINZProvider(BaseProvider):
                                     raise Exception("Download cancelled")
                                 last_percent = percent
 
-            log(f"[EXPORT] Download complete: {downloaded} bytes")
-
             extracted_path = None
             raster_extensions = ('.tif', '.tiff', '.asc', '.img', '.dem', '.hgt', '.bil', '.flt', '.nc', '.grd')
             try:
@@ -807,11 +704,58 @@ class LINZProvider(BaseProvider):
                         if name.lower().endswith(raster_extensions):
                             zf.extract(name, output_dir)
                             extracted_path = output_dir / name
-                            log(f"[EXPORT] Extracted: {extracted_path}")
                             break
                 output_path.unlink()
-            except Exception as e:
-                log(f"[EXPORT] Extract error: {e}")
+            except:
+                pass
+
+            if extracted_path and extracted_path.exists():
+                try:
+                    from qgis.core import QgsRasterLayer
+                    from qgis import processing
+
+                    layer = QgsRasterLayer(str(extracted_path), "temp")
+
+                    if not layer.isValid():
+                        current_crs = None
+                    else:
+                        current_crs = layer.crs().authid()
+
+                    del layer
+
+                    if current_crs == "EPSG:4326":
+                        native_crs = dataset.crs or "EPSG:2193"
+                        reprojected_path = extracted_path.with_name(f"{extracted_path.stem}_2193{extracted_path.suffix}")
+
+                        processing.run("gdal:warpreproject", {
+                            'INPUT': str(extracted_path),
+                            'SOURCE_CRS': 'EPSG:4326',
+                            'TARGET_CRS': native_crs,
+                            'RESAMPLING': 0,
+                            'NODATA': None,
+                            'TARGET_RESOLUTION': None,
+                            'OPTIONS': '',
+                            'DATA_TYPE': 0,
+                            'TARGET_EXTENT': None,
+                            'TARGET_EXTENT_CRS': None,
+                            'MULTITHREADING': True,
+                            'EXTRA': '',
+                            'OUTPUT': str(reprojected_path)
+                        })
+
+                        if reprojected_path.exists():
+                            for attempt in range(3):
+                                try:
+                                    extracted_path.unlink()
+                                    reprojected_path.rename(extracted_path)
+                                    break
+                                except (PermissionError, OSError):
+                                    if attempt < 2:
+                                        time.sleep(0.5)
+                                    else:
+                                        raise
+                except:
+                    pass
 
             final_path = extracted_path if extracted_path and extracted_path.exists() else output_path
             return DownloadResult(
@@ -821,7 +765,6 @@ class LINZProvider(BaseProvider):
             )
 
         except requests.HTTPError as e:
-            log(f"[EXPORT] HTTP error: {str(e)}")
             return DownloadResult(
                 dataset=dataset,
                 output_path=output_dir,
@@ -829,7 +772,6 @@ class LINZProvider(BaseProvider):
                 error_message=f"Export HTTP error: {str(e)}"
             )
         except Exception as e:
-            log(f"[EXPORT] Exception: {type(e).__name__}: {str(e)}")
             return DownloadResult(
                 dataset=dataset,
                 output_path=output_dir,
