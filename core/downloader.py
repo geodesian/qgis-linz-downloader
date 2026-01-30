@@ -61,7 +61,7 @@ class DownloadTask(QgsTask):
             progress_callback
         )
 
-        if self.result.success and self.clip_geometry:
+        if self.result.success and self.clip_geometry and not self.result.already_clipped:
             try:
                 self.setProgress(85)
                 clipped_path = Clipper.clip(
@@ -74,7 +74,11 @@ class DownloadTask(QgsTask):
                 self.result.clipped = True
                 self.setProgress(100)
             except Exception as e:
+                self.result.success = False
                 self.result.error_message = f"Clip failed: {e}"
+        elif self.result.success and self.result.already_clipped:
+            self.result.clipped = True
+            self.setProgress(100)
 
         return self.result.success
 

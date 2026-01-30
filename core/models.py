@@ -57,3 +57,4 @@ class DownloadResult:
     error_message: Optional[str] = None
     warning_message: Optional[str] = None
     clipped: bool = False
+    already_clipped: bool = False

@@ -22,10 +22,12 @@ from .widgets.area_tools import AreaType, RectangleTool, SquareTool, PolygonTool
 from .widgets.dataset_tree import DatasetTreeWidget
 from .widgets.progress_widget import DownloadProgressWidget
 from .widgets.collapsible_group import CollapsibleGroupBox
+from .api_key_dialog import APIKeyDialog
 from ..providers import get_provider, list_providers
 from ..providers.base import BaseProvider
 from ..core.downloader import DownloadManager
 from ..core.models import DataType
+from ..core.api_keys import APIKeyManager
 
 
 class AreaUnit(Enum):
@@ -54,6 +56,7 @@ class MainDialog(QDialog):
         super().__init__(parent)
         self.iface = iface
         self.settings = QgsSettings()
+        self.api_key_manager = APIKeyManager()
         self.area_tool = None
         self.current_geometry: Optional[QgsGeometry] = None
         self.provider: Optional[BaseProvider] = None
@@ -79,13 +82,19 @@ class MainDialog(QDialog):
         layout = QVBoxLayout(scroll_content)
         layout.setSpacing(5)
 
-        api_group = CollapsibleGroupBox("LINZ Data Service")
+        api_group = CollapsibleGroupBox("API Keys")
         api_layout = QHBoxLayout()
-        api_layout.addWidget(QLabel("API Key:"))
-        self.api_key_input = QLineEdit()
-        self.api_key_input.setEchoMode(QLineEdit.Password)
-        self.api_key_input.setPlaceholderText("Enter LINZ API key (get from data.linz.govt.nz)")
-        api_layout.addWidget(self.api_key_input)
+
+        configured_count = len(self.api_key_manager.get_configured_domains())
+        status_text = f"{configured_count} portal(s) configured" if configured_count > 0 else "No API keys configured"
+        self.api_status_label = QLabel(status_text)
+        api_layout.addWidget(self.api_status_label)
+        api_layout.addStretch()
+
+        self.configure_keys_btn = QPushButton("Configure API Keys...")
+        self.configure_keys_btn.clicked.connect(self._configure_api_keys)
+        api_layout.addWidget(self.configure_keys_btn)
+
         api_group.content_layout().addLayout(api_layout)
         layout.addWidget(api_group)
 
@@ -129,6 +138,15 @@ class MainDialog(QDialog):
         search_layout.addWidget(self.show_all_checkbox)
         search_layout.addStretch()
         datasets_group.content_layout().addLayout(search_layout)
+
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Filter:"))
+        self.filter_input = QLineEdit()
+        self.filter_input.setPlaceholderText("Search datasets by name, domain, or description...")
+        self.filter_input.setClearButtonEnabled(True)
+        filter_layout.addWidget(self.filter_input)
+        datasets_group.content_layout().addLayout(filter_layout)
+
         self.dataset_tree = DatasetTreeWidget()
         self.dataset_tree.setMinimumHeight(250)
         datasets_group.content_layout().addWidget(self.dataset_tree)
@@ -202,13 +220,12 @@ class MainDialog(QDialog):
         self.clear_log_btn.clicked.connect(self.log_text.clear)
         self.unit_combo.currentIndexChanged.connect(self._update_area_display)
         self.layer_menu.aboutToShow.connect(self._populate_layer_menu)
+        self.filter_input.textChanged.connect(self.dataset_tree.filter_datasets)
 
     def _load_settings(self):
         self.output_path_input.setText(
             self.settings.value("DataDownloader/output_path", "")
         )
-        api_key = self.settings.value("DataDownloader/linz_api_key", "")
-        self.api_key_input.setText(api_key)
         self.import_checkbox.setChecked(
             self.settings.value("DataDownloader/import_to_project", True, type=bool)
         )
@@ -221,10 +238,20 @@ class MainDialog(QDialog):
 
     def _save_settings(self):
         self.settings.setValue("DataDownloader/output_path", self.output_path_input.text())
-        self.settings.setValue("DataDownloader/linz_api_key", self.api_key_input.text())
         self.settings.setValue("DataDownloader/import_to_project", self.import_checkbox.isChecked())
         self.settings.setValue("DataDownloader/set_nodata", self.nodata_checkbox.isChecked())
         self.settings.setValue("DataDownloader/nodata_value", self.nodata_spinbox.value())
+
+    def _configure_api_keys(self):
+        dialog = APIKeyDialog(self)
+        if dialog.exec_():
+            configured_count = len(self.api_key_manager.get_configured_domains())
+            status_text = f"{configured_count} portal(s) configured" if configured_count > 0 else "No API keys configured"
+            self.api_status_label.setText(status_text)
+
+            has_keys = configured_count > 0
+            if has_keys and self.current_geometry:
+                self.search_btn.setEnabled(True)
 
     def _populate_layer_menu(self):
         self.layer_menu.clear()
@@ -363,7 +390,7 @@ class MainDialog(QDialog):
         self.area_layer = None
 
     def _get_provider(self) -> BaseProvider:
-        return get_provider("linz", api_key=self.api_key_input.text())
+        return get_provider("linz", api_key_manager=self.api_key_manager)
 
     def _search_datasets(self):
         if not self.current_geometry:
@@ -372,7 +399,11 @@ class MainDialog(QDialog):
         self.provider = self._get_provider()
 
         if not self.provider.validate_credentials():
-            QMessageBox.warning(self, "Authentication Error", "Invalid or missing LINZ API key. Get one at: https://data.linz.govt.nz/my/api/")
+            QMessageBox.warning(
+                self,
+                "Authentication Error",
+                "No API keys configured. Please click 'Configure API Keys...' to add API keys for Koordinates portals."
+            )
             return
 
         self.search_btn.setEnabled(False)

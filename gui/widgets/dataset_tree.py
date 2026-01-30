@@ -20,7 +20,7 @@ class DatasetTreeWidget(QTreeWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setHeaderLabels(["Name", "Type", "Res"])
+        self.setHeaderLabels(["Name", "Type", "Res", "Domain"])
         self.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.itemSelectionChanged.connect(self._on_selection_changed)
@@ -29,6 +29,7 @@ class DatasetTreeWidget(QTreeWidget):
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
 
         self.setAlternatingRowColors(True)
         self.setRootIsDecorated(True)
@@ -61,6 +62,7 @@ class DatasetTreeWidget(QTreeWidget):
             category_item = QTreeWidgetItem([
                 f"{category.name} {count_text}",
                 "",
+                "",
                 ""
             ])
 
@@ -76,11 +78,13 @@ class DatasetTreeWidget(QTreeWidget):
             for dataset in sorted_datasets:
                 resolution = dataset.metadata.get("resolution", "") if dataset.metadata else ""
                 is_portal_only = dataset.metadata.get("portal_only", False) if dataset.metadata else False
+                domain = dataset.metadata.get("domain", "") if dataset.metadata else ""
 
                 dataset_item = QTreeWidgetItem([
                     dataset.name,
                     dataset.data_type.value,
-                    resolution
+                    resolution,
+                    domain
                 ])
                 dataset_item.setFlags(
                     Qt.ItemIsEnabled | Qt.ItemIsSelectable
@@ -89,7 +93,7 @@ class DatasetTreeWidget(QTreeWidget):
 
                 if is_portal_only:
                     gray_brush = QBrush(QColor(128, 128, 128))
-                    for col in range(3):
+                    for col in range(4):
                         dataset_item.setForeground(col, gray_brush)
                     font = dataset_item.font(0)
                     font.setItalic(True)
@@ -127,6 +131,45 @@ class DatasetTreeWidget(QTreeWidget):
     def expand_all_categories(self):
         for i in range(self.topLevelItemCount()):
             self.topLevelItem(i).setExpanded(True)
+
+    def filter_datasets(self, filter_text: str):
+        if not filter_text:
+            for i in range(self.topLevelItemCount()):
+                category_item = self.topLevelItem(i)
+                category_item.setHidden(False)
+                for j in range(category_item.childCount()):
+                    category_item.child(j).setHidden(False)
+            return
+
+        filter_lower = filter_text.lower()
+
+        for i in range(self.topLevelItemCount()):
+            category_item = self.topLevelItem(i)
+            has_visible_children = False
+
+            for j in range(category_item.childCount()):
+                dataset_item = category_item.child(j)
+                dataset = dataset_item.data(0, Qt.UserRole)
+
+                name = dataset_item.text(0).lower()
+                domain = dataset_item.text(3).lower()
+                abstract = ""
+                if dataset and dataset.metadata:
+                    abstract = dataset.metadata.get("abstract", "").lower()
+
+                matches = (
+                    filter_lower in name or
+                    filter_lower in domain or
+                    filter_lower in abstract
+                )
+
+                dataset_item.setHidden(not matches)
+                if matches:
+                    has_visible_children = True
+
+            category_item.setHidden(not has_visible_children)
+            if has_visible_children:
+                category_item.setExpanded(True)
 
     @staticmethod
     def _format_size(size_bytes: int) -> str:
