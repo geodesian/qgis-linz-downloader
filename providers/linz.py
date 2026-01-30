@@ -1,11 +1,11 @@
-from typing import Optional
+from typing import Optional, Callable
 from pathlib import Path
 import requests
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 
-from qgis.core import QgsGeometry, QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsRectangle, QgsVectorLayer, QgsVectorFileWriter, QgsWkbTypes
+from qgis.core import QgsGeometry, QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsRectangle, QgsVectorLayer, QgsVectorFileWriter, QgsWkbTypes, QgsApplication
 
 try:
     from owslib.wfs import WebFeatureService
@@ -16,6 +16,7 @@ except ImportError:
 from .base import BaseProvider
 from ..core.models import Dataset, DatasetCategory, ProviderInfo, DownloadResult, DataType
 from ..core.api_keys import APIKeyManager
+from ..core.validation_task import ValidationTask
 
 
 class LINZProvider(BaseProvider):
@@ -217,7 +218,8 @@ class LINZProvider(BaseProvider):
         bbox: tuple,
         show_all: bool,
         wfs_metadata: dict,
-        categories: dict
+        categories: dict,
+        validate_coverage: bool = False
     ) -> None:
         api_key = self.api_key_manager.get_api_key(domain)
         if not api_key:
@@ -257,7 +259,7 @@ class LINZProvider(BaseProvider):
                 layer_map[layer_id] = layer
                 all_layer_ids.append(layer_id)
 
-            if bbox:
+            if validate_coverage and bbox:
                 valid_ids = self._validate_coverage(all_layer_ids, bbox, domain)
             else:
                 valid_ids = set(all_layer_ids)
@@ -265,10 +267,10 @@ class LINZProvider(BaseProvider):
             for layer_id, layer in layer_map.items():
                 data_type = self._detect_data_type(layer)
 
-                has_coverage = layer_id in valid_ids
+                has_coverage = layer_id in valid_ids if validate_coverage else True
                 is_portal_only = not has_coverage and show_all
 
-                if not has_coverage and not show_all:
+                if validate_coverage and not has_coverage and not show_all:
                     continue
 
                 layer_title = layer.get("title", layer.get("name", "Unknown"))
@@ -327,7 +329,7 @@ class LINZProvider(BaseProvider):
         except requests.RequestException:
             pass
 
-    def search(self, geometry: QgsGeometry = None, show_all: bool = False) -> list[DatasetCategory]:
+    def search(self, geometry: QgsGeometry = None, show_all: bool = False, validate_coverage: bool = False) -> list[DatasetCategory]:
         configured_domains = self.api_key_manager.get_configured_domains()
         if not configured_domains:
             raise ValueError("No API keys configured. Please configure API keys in Settings.")
@@ -340,9 +342,58 @@ class LINZProvider(BaseProvider):
 
         for domain in configured_domains:
             wfs_metadata = self._get_all_wfs_metadata(domain)
-            self._search_single_domain(domain, bbox, show_all, wfs_metadata, categories)
+            self._search_single_domain(domain, bbox, show_all, wfs_metadata, categories, validate_coverage)
 
         return list(categories.values())
+
+    def start_validation_tasks(
+        self,
+        datasets: list[Dataset],
+        geometry: QgsGeometry,
+        on_layer_validated: Optional[Callable[[str, str, bool], None]] = None,
+        on_domain_complete: Optional[Callable[[str, set], None]] = None
+    ) -> list[ValidationTask]:
+        bbox = self._geometry_to_bbox(geometry)
+        minx, miny, maxx, maxy = bbox
+        extent_geojson = {
+            "type": "Polygon",
+            "coordinates": [[[minx, miny], [maxx, miny], [maxx, maxy], [minx, maxy], [minx, miny]]]
+        }
+
+        domain_layers = {}
+        for dataset in datasets:
+            domain = dataset.metadata.get("domain", self.DOMAIN)
+            layer_id = dataset.metadata.get("layer_id")
+            if domain not in domain_layers:
+                domain_layers[domain] = []
+            domain_layers[domain].append(layer_id)
+
+        tasks = []
+        for domain, layer_ids in domain_layers.items():
+            def make_callback(d=domain):
+                def callback(layer_id: str, has_coverage: bool):
+                    if on_layer_validated:
+                        on_layer_validated(d, layer_id, has_coverage)
+                return callback
+
+            def make_complete_callback(d=domain):
+                def callback(valid_ids: set):
+                    if on_domain_complete:
+                        on_domain_complete(d, valid_ids)
+                return callback
+
+            task = ValidationTask(
+                self,
+                layer_ids,
+                extent_geojson,
+                domain,
+                on_layer_validated=make_callback(),
+                on_complete=make_complete_callback()
+            )
+            tasks.append(task)
+            QgsApplication.taskManager().addTask(task)
+
+        return tasks
 
     def _check_single_layer_coverage(self, layer_id: str, extent_geojson: dict, domain: str) -> Optional[str]:
         api_key = self.api_key_manager.get_api_key(domain)

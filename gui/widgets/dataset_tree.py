@@ -132,6 +132,21 @@ class DatasetTreeWidget(QTreeWidget):
         for i in range(self.topLevelItemCount()):
             self.topLevelItem(i).setExpanded(True)
 
+    def remove_dataset_by_layer_id(self, domain: str, layer_id: str):
+        for i in range(self.topLevelItemCount()):
+            category_item = self.topLevelItem(i)
+            for j in range(category_item.childCount() - 1, -1, -1):
+                child = category_item.child(j)
+                dataset = child.data(0, Qt.UserRole)
+                if dataset:
+                    dataset_domain = dataset.metadata.get("domain", "")
+                    dataset_layer_id = dataset.metadata.get("layer_id", "")
+                    if dataset_domain == domain and dataset_layer_id == layer_id:
+                        category_item.removeChild(child)
+
+            if category_item.childCount() == 0:
+                self.takeTopLevelItem(i)
+
     def filter_datasets(self, filter_text: str):
         if not filter_text:
             for i in range(self.topLevelItemCount()):

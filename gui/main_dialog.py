@@ -63,6 +63,7 @@ class MainDialog(QDialog):
         self.download_manager: Optional[DownloadManager] = None
         self.current_area_m2: float = 0.0
         self.area_layer: Optional[QgsVectorLayer] = None
+        self.all_datasets: list = []
 
         self._setup_ui()
         self._connect_signals()
@@ -407,16 +408,22 @@ class MainDialog(QDialog):
             return
 
         self.search_btn.setEnabled(False)
-        self.log("Searching LINZ datasets...")
+        self.log("Searching and validating datasets...")
 
         QgsApplication.processEvents()
 
         try:
             show_all = self.show_all_checkbox.isChecked()
-            categories = self.provider.search(self.current_geometry, show_all=show_all)
+            categories = self.provider.search(self.current_geometry, show_all=show_all, validate_coverage=True)
+
+            self.all_datasets = []
+            for category in categories:
+                self.all_datasets.extend(category.datasets)
+
             self.dataset_tree.load_categories(categories)
-            total = sum(len(c.datasets) for c in categories)
-            self.log(f"Found {total} datasets in {len(categories)} categories")
+            total = len(self.all_datasets)
+            self.log(f"Found {total} validated datasets in {len(categories)} categories")
+
         except Exception as e:
             self.log(f"Search error: {e}")
             self.log(traceback.format_exc())
